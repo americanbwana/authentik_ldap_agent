@@ -18,4 +18,27 @@ Describe 'Repository credential safety' {
         $script | Should -Match 'if \(\$AuthentikOnly\)[\s\S]+?IdentityProviderHandoff[\s\S]+?return'
         $script.IndexOf('if ($AuthentikOnly)') | Should -BeLessThan $script.IndexOf("Write-Information 'Configuring LDAP and group roles in VCF Automation.'")
     }
+
+    It 'keeps bastion secrets out of plaintext parameters' {
+        foreach ($name in 'Set-AuthentikLdap.ps1', 'Set-VcfAutomationLdap.ps1') {
+            $script = Get-Content -LiteralPath (Join-Path $PSScriptRoot "../scripts/remote/$name") -Raw
+            $script | Should -Match '\[securestring\]\s+\$SharedPassword'
+            $script | Should -Not -Match '\[string\]\s+\$SharedPassword'
+        }
+        $authentikScript = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../scripts/remote/Set-AuthentikLdap.ps1') -Raw
+        $authentikScript | Should -Match '\[securestring\]\s+\$AuthentikToken'
+    }
+
+    It 'retains existing Authentik objects when PATCH returns an empty body' {
+        $script = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../scripts/remote/Set-AuthentikLdap.ps1') -Raw
+        $script | Should -Match '\$Response -isnot \[string\]'
+        $script | Should -Match '\$resolved = if \(\$hasResponseObject\) \{ \$Response \} else \{ \$Existing \}'
+    }
+
+    It 'limits bastion API response tracing to group endpoints' {
+        $script = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../scripts/remote/Set-AuthentikLdap.ps1') -Raw
+        $script | Should -Match '\[switch\]\s+\$TraceGroupApiResponses'
+        $script | Should -Match "\$Path -like '/core/groups/\*'"
+        $script | Should -Not -Match 'TRACE Authentik request'
+    }
 }

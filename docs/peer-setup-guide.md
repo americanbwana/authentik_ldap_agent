@@ -63,6 +63,39 @@ The output should show:
 
 ## 3. Configure secure SSH access
 
+### Bastion-native alternative
+
+When an adjacent Ubuntu bastion has direct access to Authentik, VCF Automation,
+and LDAP, SSH to the HoloRouter is not required. Install PowerShell 7.2 or newer
+and upload `Set-AuthentikLdap.ps1` and `Set-VcfAutomationLdap.ps1` from
+`scripts/remote/`.
+
+Run endpoint discovery, then configure Authentik:
+
+```powershell
+pwsh -File ./Set-AuthentikLdap.ps1 -AllowUntrustedTls
+pwsh -File ./Set-AuthentikLdap.ps1 -Apply -Confirm -AllowUntrustedTls
+```
+
+The apply run securely prompts for the shared lab password and an existing
+Authentik API token. The token is not bootstrapped from Kubernetes in bastion
+mode. Plain LDAP is the default; the script creates the managed outpost and
+waits for `10.1.1.1:389`. LDAPS is optional. To enable it, add `-EnableLdaps`
+and provide both `-CertificatePath` and `-PrivateKeyPath` using protected PEM
+files when the named certificate does not already exist in Authentik.
+
+Once the LDAP endpoint and organization exist, configure the organization:
+
+```powershell
+pwsh -File ./Set-VcfAutomationLdap.ps1 -AllowUntrustedTls
+pwsh -File ./Set-VcfAutomationLdap.ps1 -Apply -Confirm -AllowUntrustedTls
+```
+
+Omit `-AllowUntrustedTls` when the bastion trusts the Holodeck CA. Override the
+scripts' URI, LDAP endpoint, base DN, group, and external-IP parameters for a
+different lab. Run both apply commands a second time after changes to prove
+idempotency.
+
 Create a dedicated key on the Mac. Protect it with a passphrase and store that
 passphrase in the macOS Keychain when prompted.
 
@@ -136,6 +169,10 @@ The validated Site A values are:
     LdapAdminGroup      = 'vcf-admins'
     LdapUserGroup       = 'vcf-users'
     LdapUsers           = @('vcfadmin', 'vcfuser01', 'vcfuser02')
+    LdapHost            = '10.1.1.1'
+    LdapPort            = 389
+    LdapExternalIps     = @('172.20.41.120', '10.1.1.1')
+    AllowUntrustedTls   = $false
 }
 ```
 

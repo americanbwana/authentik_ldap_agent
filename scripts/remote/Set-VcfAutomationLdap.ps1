@@ -1,14 +1,117 @@
-[CmdletBinding()]
-param()
+[CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+param(
+    [Parameter()] [switch] $Apply,
+    [Parameter()] [securestring] $SharedPassword,
+    [Parameter()] [string] $AutomationUri = 'https://auto-a.site-a.vcf.lab',
+    [Parameter()] [string] $AutomationOrg = 'all-apps-org-01',
+    [Parameter()] [string] $AutomationUser = 'configadmin',
+    [Parameter()] [string] $LdapHost = '10.1.1.1',
+    [Parameter()] [int] $LdapPort = 389,
+    [Parameter()] [string] $LdapBaseDn = 'dc=vcf,dc=lab',
+    [Parameter()] [string] $AdminGroup = 'vcf-admins',
+    [Parameter()] [string] $UserGroup = 'vcf-users',
+    [Parameter()] [switch] $AllowUntrustedTls
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$payload = $null
+$directMode = $false
+$sessionInfo = $null
+$headers = $null
 
-$payloadText = [Console]::In.ReadToEnd()
-if ([string]::IsNullOrWhiteSpace($payloadText)) { throw 'A JSON payload is required on stdin.' }
-$payload = $payloadText | ConvertFrom-Json -AsHashtable
-$baseUri = 'https://auto-a.site-a.vcf.lab'
+function ConvertFrom-SecureStringValue {
+    param([Parameter(Mandatory)] [securestring] $Value)
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
+    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+}
+
+$scriptVersion = '2026.08.18.2'
+$directMode = -not [string]::IsNullOrWhiteSpace($PSCommandPath)
+
+function Test-TcpEndpoint {
+    param([Parameter(Mandatory)] [string] $HostName, [Parameter(Mandatory)] [int] $Port)
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $task = $client.ConnectAsync($HostName, $Port)
+        return [bool] ($task.Wait([TimeSpan]::FromSeconds(3)) -and $client.Connected)
+    }
+    catch { return $false }
+    finally { $client.Dispose() }
+}
+
+function Assert-DirectConfiguration {
+    foreach ($setting in @{
+        AutomationUri = $AutomationUri
+        AutomationOrg = $AutomationOrg
+        AutomationUser = $AutomationUser
+        LdapHost = $LdapHost
+        LdapBaseDn = $LdapBaseDn
+        AdminGroup = $AdminGroup
+        UserGroup = $UserGroup
+    }.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string] $setting.Value)) {
+            throw "Direct VCF configuration '$($setting.Key)' cannot be empty."
+        }
+    }
+    $parsedAutomationUri = $null
+    if (-not [Uri]::TryCreate($AutomationUri, [UriKind]::Absolute, [ref] $parsedAutomationUri) -or
+        $parsedAutomationUri.Scheme -ne 'https') {
+        throw "AutomationUri must be an absolute HTTPS URI: $AutomationUri"
+    }
+    if ($LdapPort -lt 1 -or $LdapPort -gt 65535) { throw "LdapPort is outside the valid range: $LdapPort" }
+}
+
+if ($directMode) {
+    Assert-DirectConfiguration
+    Write-Information "VCF bastion script version: $scriptVersion" -InformationAction Continue
+    $probeParameters = @{
+        Uri = "$($AutomationUri.TrimEnd('/'))/suite-api/api/versions/current"
+        Method = 'GET'
+        SkipCertificateCheck = [bool] $AllowUntrustedTls
+        TimeoutSec = 10
+    }
+    $probe = Invoke-WebRequest @probeParameters
+    Write-Information "VCF Automation discovery succeeded: HTTP $([int] $probe.StatusCode) from $AutomationUri." -InformationAction Continue
+    $ldapReachable = Test-TcpEndpoint -HostName $LdapHost -Port $LdapPort
+    Write-Information "LDAP endpoint discovery: ${LdapHost}:${LdapPort} reachable=$ldapReachable." -InformationAction Continue
+    if (-not $ldapReachable) { throw "LDAP endpoint ${LdapHost}:${LdapPort} is not reachable from the bastion." }
+    if (-not $Apply) {
+        Write-Information 'Dry run complete. Use -Apply -Confirm to configure the VCF Automation organization.' -InformationAction Continue
+        return
+    }
+    if (-not $PSCmdlet.ShouldProcess("$AutomationOrg at $AutomationUri", 'Enable LDAP, import groups, assign roles, and test user authentication')) { return }
+    if ($null -eq $SharedPassword) { $SharedPassword = Read-Host 'Shared Holodeck password' -AsSecureString }
+    $payload = @{
+        SharedPassword = ConvertFrom-SecureStringValue $SharedPassword
+        AutomationUri = $AutomationUri.TrimEnd('/')
+        AutomationOrg = $AutomationOrg
+        AutomationUser = $AutomationUser
+        LdapHost = $LdapHost
+        LdapPort = $LdapPort
+        LdapBaseDn = $LdapBaseDn
+        AdminGroup = $AdminGroup
+        UserGroup = $UserGroup
+        AllowUntrustedTls = [bool] $AllowUntrustedTls
+    }
+}
+else {
+    $payloadText = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($payloadText)) { throw 'A JSON payload is required on stdin.' }
+    $payload = $payloadText | ConvertFrom-Json -AsHashtable
+}
+if ($null -eq $payload) { throw 'VCF payload initialization failed before API execution.' }
+$baseUri = if ($payload.AutomationUri) { ([string] $payload.AutomationUri).TrimEnd('/') } else { 'https://auto-a.site-a.vcf.lab' }
+$skipCertificateCheck = if ($payload.ContainsKey('AllowUntrustedTls')) { [bool] $payload.AllowUntrustedTls } else { $true }
 $accept = 'application/json;version=9.1.0'
+
+trap {
+    if ($directMode -and $null -ne $payload) { $payload.SharedPassword = $null }
+    if ($null -ne $sessionInfo) { $sessionInfo.Token = $null }
+    if ($null -ne $headers) { $headers.Authorization = $null }
+    throw $_
+}
 
 function New-VcfSession {
     $identity = "$($payload.AutomationUser)@$($payload.AutomationOrg):$($payload.SharedPassword)"
@@ -16,7 +119,7 @@ function New-VcfSession {
     $response = Invoke-WebRequest -Uri "$baseUri/cloudapi/1.0.0/sessions" -Method POST -Headers @{
         Authorization = "Basic $basic"
         Accept = $accept
-    } -SkipCertificateCheck
+    } -SkipCertificateCheck:$skipCertificateCheck
     $token = [string] $response.Headers['X-VMWARE-VCLOUD-ACCESS-TOKEN']
     if ([string]::IsNullOrWhiteSpace($token)) {
         $token = [string] $response.Headers['x-vcloud-authorization']
@@ -42,7 +145,7 @@ function Invoke-VcfApi {
         Uri = "$baseUri$Path"
         Method = $Method
         Headers = $headers
-        SkipCertificateCheck = $true
+        SkipCertificateCheck = $skipCertificateCheck
         ErrorAction = 'Stop'
     }
     if ($null -ne $Body) {
@@ -63,8 +166,8 @@ function Invoke-VcfApi {
 
 function Get-LdapSettings {
     @{
-        hostName = '10.1.1.1'
-        port = 389
+        hostName = if ($payload.LdapHost) { [string] $payload.LdapHost } else { '10.1.1.1' }
+        port = if ($payload.LdapPort) { [int] $payload.LdapPort } else { 389 }
         isSsl = $false
         isSslAcceptAll = $false
         pagedSearchDisabled = $false
@@ -200,8 +303,8 @@ function Ensure-VcfLdapGroup {
     Invoke-VcfApi PUT "/cloudapi/1.0.0/groups/$([Uri]::EscapeDataString($existing[0].id))" $updateBody
 }
 
-$adminGroup = Ensure-VcfLdapGroup $payload.AdminGroup 'Organization Administrator'
-$userGroup = Ensure-VcfLdapGroup $payload.UserGroup 'Organization User'
+$adminGroupObject = Ensure-VcfLdapGroup $payload.AdminGroup 'Organization Administrator'
+$userGroupObject = Ensure-VcfLdapGroup $payload.UserGroup 'Organization User'
 
 $null = Invoke-VcfApi DELETE '/cloudapi/1.0.0/sessions/current'
 
@@ -212,7 +315,7 @@ function Test-VcfLdapLogin {
     $response = Invoke-WebRequest -Uri "$baseUri/cloudapi/1.0.0/sessions" -Method POST -Headers @{
         Authorization = "Basic $basic"
         Accept = $accept
-    } -SkipCertificateCheck
+    } -SkipCertificateCheck:$skipCertificateCheck
     $token = [string] $response.Headers['X-VMWARE-VCLOUD-ACCESS-TOKEN']
     if ([string]::IsNullOrWhiteSpace($token)) {
         $token = [string] $response.Headers['x-vcloud-authorization']
@@ -222,19 +325,26 @@ function Test-VcfLdapLogin {
     $null = Invoke-RestMethod -Uri "$baseUri/cloudapi/1.0.0/sessions/current" -Method DELETE -Headers @{
         Authorization = "Bearer $token"
         Accept = $accept
-    } -SkipCertificateCheck
+    } -SkipCertificateCheck:$skipCertificateCheck
     [string] $verifiedSession.user.name
 }
 
 $authenticatedUsers = @(@('vcfadmin', 'vcfuser01', 'vcfuser02') | ForEach-Object { Test-VcfLdapLogin $_ })
-[ordered]@{
-    Organization = $sessionInfo.Session.org.name
-    LdapEnabled = $true
-    LdapHost = '10.1.1.1'
-    LdapPort = 389
-    AdminGroup = $adminGroup.name
-    AdminRole = 'Organization Administrator'
-    UserGroup = $userGroup.name
-    UserRole = 'Organization User'
-    AuthenticatedUsers = $authenticatedUsers
-} | ConvertTo-Json -Depth 5
+try {
+    [ordered]@{
+        Organization = $sessionInfo.Session.org.name
+        LdapEnabled = $true
+        LdapHost = $ldapSettings.hostName
+        LdapPort = $ldapSettings.port
+        AdminGroup = $adminGroupObject.name
+        AdminRole = 'Organization Administrator'
+        UserGroup = $userGroupObject.name
+        UserRole = 'Organization User'
+        AuthenticatedUsers = $authenticatedUsers
+    } | ConvertTo-Json -Depth 5
+}
+finally {
+    if ($directMode) { $payload.SharedPassword = $null }
+    $sessionInfo.Token = $null
+    $headers.Authorization = $null
+}

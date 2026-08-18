@@ -7,6 +7,20 @@ over key-authenticated SSH. All calls to internal `vcf.lab` endpoints execute on
 the router. Secrets are serialized to the remote PowerShell process through
 SSH stdin; the encoded remote program contains no secrets.
 
+An alternate execution boundary is supported for an adjacent Ubuntu bastion.
+In that mode, the two LDAP implementation scripts execute locally on the
+bastion and call Authentik and VCF Automation directly. They perform read-only
+endpoint discovery by default and require `-Apply -Confirm` before mutation.
+The bastion mode accepts the shared password and Authentik token only through
+secure prompts or `SecureString` parameters. It does not bootstrap a token from
+the Authentik container; the operator must provide an existing API token.
+
+The bastion workflow defaults to plain LDAP for the isolated lab and does not
+require a certificate. `-EnableLdaps` is optional and requires either the
+existing named Authentik certificate or explicit bastion-local certificate and
+private-key paths. The original router workflow continues enabling LDAPS to
+preserve its validated behavior.
+
 ## Authentik
 
 The live environment runs Authentik 2026.2.1 in Kubernetes. The automation uses

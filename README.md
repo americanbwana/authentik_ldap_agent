@@ -52,6 +52,66 @@ ssh -i ~/.ssh/holodeck_agent_ed25519 -o BatchMode=yes root@172.20.41.120 true
 ./scripts/Invoke-HolodeckLdapSetup.ps1 -Apply -AuthentikOnly -Confirm
 ```
 
+### Run directly from an adjacent Ubuntu bastion
+
+Install PowerShell 7.2 or newer on a bastion that can reach Authentik, VCF
+Automation, and the LDAP endpoint. Upload these two standalone scripts:
+
+- `scripts/remote/Set-AuthentikLdap.ps1`
+- `scripts/remote/Set-VcfAutomationLdap.ps1`
+
+Run read-only endpoint discovery first. `-AllowUntrustedTls` is required only
+when the bastion does not trust the Holodeck lab CA:
+
+```powershell
+pwsh -File ./Set-AuthentikLdap.ps1 -AllowUntrustedTls
+pwsh -File ./Set-VcfAutomationLdap.ps1 -AllowUntrustedTls
+```
+
+Configure Authentik first. The script securely prompts for the shared password
+and an existing Authentik API token:
+
+```powershell
+pwsh -File ./Set-AuthentikLdap.ps1 -Apply -Confirm -AllowUntrustedTls
+```
+
+If group creation or update returns an unexpected object shape, enable the
+scoped response trace:
+
+```powershell
+pwsh -File ./Set-AuthentikLdap.ps1 -Apply -Confirm -AllowUntrustedTls `
+  -TraceGroupApiResponses
+```
+
+This prints only responses from `/api/v3/core/groups/`, including their
+PowerShell runtime type and up to 4,000 characters of response content. It does
+not trace request headers, passwords, API tokens, certificates, or private keys.
+
+The bastion workflow defaults to plain LDAP only, which is appropriate for the
+isolated Holodeck lab. It creates the managed LDAP outpost and waits until the
+configured port, normally `10.1.1.1:389`, is reachable.
+
+To optionally enable LDAPS, copy the PEM files securely to the bastion and use
+`-EnableLdaps` with both paths:
+
+```powershell
+pwsh -File ./Set-AuthentikLdap.ps1 -Apply -Confirm -AllowUntrustedTls -EnableLdaps `
+  -CertificatePath /secure/runtime/auth.crt `
+  -PrivateKeyPath /secure/runtime/auth.key
+```
+
+After LDAP is reachable and the organization exists, optionally configure VCF
+Automation:
+
+```powershell
+pwsh -File ./Set-VcfAutomationLdap.ps1 -Apply -Confirm -AllowUntrustedTls
+```
+
+Secrets are accepted only as secure prompts or `SecureString` parameters. Do
+not place them in shell arguments, environment variables, files, or transcripts.
+Use the URI, organization, LDAP endpoint, base-DN, group, and external-IP
+parameters when the bastion targets a lab other than the validated Site A.
+
 The implementation is validated against the live Authentik 2026.2.1 OpenAPI
 schema and the VCF Automation 9.1 Provider Management APIs. It performs these
 operations in dependency order:

@@ -70,6 +70,12 @@ if (-not (Test-Path -LiteralPath $ConfigurationPath -PathType Leaf)) {
 }
 
 $configuration = Import-PowerShellDataFile -LiteralPath $ConfigurationPath
+$ldapHost = if ($configuration.ContainsKey('LdapHost')) { [string] $configuration.LdapHost } else { '10.1.1.1' }
+$ldapPort = if ($configuration.ContainsKey('LdapPort')) { [int] $configuration.LdapPort } else { 389 }
+$ldapExternalIps = if ($configuration.ContainsKey('LdapExternalIps')) {
+    @($configuration.LdapExternalIps)
+}
+else { @('172.20.41.120', '10.1.1.1') }
 
 Write-Information 'Running read-only Holodeck discovery.' -InformationAction Continue
 Invoke-RouterPowerShell -Configuration $configuration -ScriptBlock {
@@ -214,11 +220,18 @@ try {
 
     $commonPayload = @{
         SharedPassword   = $plainPassword
+        AuthentikUri     = $configuration.AuthentikUri
+        AutomationUri    = $configuration.AutomationUri
         LdapBaseDn       = $configuration.LdapBaseDn
         AdminGroup       = $configuration.LdapAdminGroup
         UserGroup        = $configuration.LdapUserGroup
         AutomationUser   = $configuration.AutomationUser
         AutomationOrg    = $configuration.AutomationOrg
+        LdapHost         = $ldapHost
+        LdapPort         = $ldapPort
+        ExternalIp       = @($ldapExternalIps)
+        AllowUntrustedTls = $true
+        EnableLdaps       = $true
     }
 
     if ($OidcDiscovery) {
@@ -262,17 +275,18 @@ try {
     $deadline = [DateTime]::UtcNow.AddMinutes(5)
     do {
         $ready = ([string](Invoke-RouterPowerShell -Configuration $configuration -ScriptBlock {
+            $probePayload = [Console]::In.ReadToEnd() | ConvertFrom-Json
             $client = [Net.Sockets.TcpClient]::new()
             try {
-                $task = $client.ConnectAsync('10.1.1.1', 389)
+                $task = $client.ConnectAsync([string] $probePayload.LdapHost, [int] $probePayload.LdapPort)
                 [bool]($task.Wait([TimeSpan]::FromSeconds(3)) -and $client.Connected)
             }
             catch { $false }
             finally { $client.Dispose() }
-        })).Trim() -eq 'True'
+        } -InputObject @{ LdapHost = $ldapHost; LdapPort = $ldapPort })).Trim() -eq 'True'
         if (-not $ready) { Start-Sleep -Seconds 10 }
     } until ($ready -or [DateTime]::UtcNow -ge $deadline)
-    if (-not $ready) { throw 'Internal LDAP endpoint 10.1.1.1:389 did not become available within five minutes.' }
+    if (-not $ready) { throw "Internal LDAP endpoint ${ldapHost}:${ldapPort} did not become available within five minutes." }
 
     if ($AuthentikOnly) {
         [ordered]@{
@@ -280,8 +294,8 @@ try {
             Authentik = ($authentikResult | ConvertFrom-Json)
             IdentityProviderHandoff = [ordered]@{
                 ConnectorType = 'OPEN_LDAP'
-                HostName = '10.1.1.1'
-                Port = 389
+                HostName = $ldapHost
+                Port = $ldapPort
                 Ssl = $false
                 SearchBase = $configuration.LdapBaseDn
                 GroupSearchBase = "ou=groups,$($configuration.LdapBaseDn)"

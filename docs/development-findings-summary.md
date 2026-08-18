@@ -220,6 +220,55 @@ attribute as part of its LDAP schema validation.
 
 ## Deployment modes
 
+### Adjacent Ubuntu bastion
+
+The LDAP implementation scripts can also be uploaded and run independently on
+an adjacent PowerShell-enabled Ubuntu bastion. This removes the Mac and router
+SSH transport from the execution path while preserving secure prompts,
+read-only defaults, explicit confirmation, idempotent object management, and
+the separation between Authentik preparation and optional VCF organization
+configuration. Bastion mode requires an existing Authentik API token and reuses
+the named LDAPS certificate unless protected PEM paths are explicitly supplied.
+
+#### Bastion troubleshooting history
+
+The first live bastion validation established the following boundaries:
+
+1. The public Authentik discovery endpoint returned HTTP 200.
+2. Initial API authentication failed because the copied token value was wrong;
+   an independent, read-only `/api/v3/core/users/me/` request isolated the issue
+   from the LDAP automation.
+3. After correcting the copy/paste process, Authentik accepted the API token
+   and created `vcf-admins` and `vcf-users`.
+4. The subsequent user phase failed because the group PATCH result appeared in
+   PowerShell as `System.String` rather than an object containing `pk`.
+5. Treating empty and then all scalar PATCH results as no-content responses
+   preserved the pre-update object, but the live result still presented as a
+   string at the group-to-user boundary.
+
+The current diagnostic adds `-TraceGroupApiResponses`. It records only group
+API response method, path, runtime type, and a bounded response body. The
+resolver also attempts `ConvertFrom-Json` when a response arrives as a string.
+This distinguishes a JSON object serialized with an unexpected content type
+from a true scalar response while keeping credentials and certificate material
+out of diagnostics.
+
+The trace subsequently proved both GET and PATCH returned proper
+`PSCustomObject` values containing `pk`. Because the value observed at the
+group-to-user boundary was nevertheless a string, the implementation no longer
+uses mutation-function output for group identity. It discards the mutation
+output, performs a fresh exact-name GET for each group, validates one object
+with `pk`, and only then supplies those IDs to user creation.
+
+The complete boundary trace then exposed the root cause: PowerShell variable
+names are case-insensitive. The script parameters `[string] $AdminGroup` and
+`[string] $UserGroup` collided with local variables named `$adminGroup` and
+`$userGroup`. Assigning each API `PSCustomObject` to the corresponding local
+name invoked the parameter's string coercion, producing the observed
+`@{pk=...}` string. The API-object variables are now named
+`$adminGroupObject` and `$userGroupObject`. The standalone regression test
+reproduces the old coercion and rejects any reintroduction of those assignments.
+
 ### Authentik-only preparation
 
 Use this when the VCF organization does not exist yet:
@@ -272,4 +321,3 @@ test suite was not executed.
 
 Together, these files provide the deployment implementation, security model,
 manual configuration reference, and operational troubleshooting guidance.
-
