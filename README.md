@@ -8,6 +8,8 @@ solution; it records the validated invariants and recovery context.
 
 For the complete peer-ready procedure and manual configuration reference, see
 [the Holodeck Authentik LDAP setup guide](docs/peer-setup-guide.md).
+For the live-validated organization-level OIDC procedure, see
+[the HoloDeck Authentik OIDC guide](docs/holodeck-vcfa-oidc-guide.md).
 For a presentation-oriented recap of the investigation, effort, architecture,
 and validated findings, see [the development findings summary](docs/development-findings-summary.md).
 

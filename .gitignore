@@ -5,3 +5,8 @@
 artifacts/
 secrets/
 
+# OIDC credentials and raw authentication captures
+oidcProvider.txt
+*client-secret*
+*token-response*
+*authorization-response*
