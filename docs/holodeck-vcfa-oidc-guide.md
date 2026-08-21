@@ -128,28 +128,50 @@ To inspect the available property names without their values:
 $oidcProvider.PSObject.Properties.Name
 ```
 
-## 6. Add both strict redirect URIs in Authentik
+## 6. Add every required strict redirect URI in Authentik
 
 Edit the `holodeck` OAuth2/OpenID provider under **Applications → Providers**.
-Configure both redirect URIs with matching mode **Strict**:
+Configure the federation and VCFA provider-context redirect URIs with matching
+mode **Strict**:
 
 ```text
 https://vc-mgmt-a.site-a.vcf.lab/federation/t/CUSTOMER/auth/response/oauth2
 https://auto-a.site-a.vcf.lab/login/oauth?service=provider
 ```
 
+Each VCFA organization that uses this Authentik provider also requires its own
+strict redirect URI. For example, organization `test-auth-org` uses:
+
+```text
+https://auto-a.site-a.vcf.lab/login/oauth?service=tenant:test-auth-org
+```
+
+Add another `service=tenant:<organization-name>` entry whenever OIDC is enabled
+for a new organization. Keep the existing federation, provider-context, and
+other organization entries; do not replace them with the newest callback.
+
 Important details:
 
 - `CUSTOMER` is the VCF federation tenant name. It is not an All Apps
   Organization name.
-- The VCFA callback's `?service=provider` query string is part of the URI and
-  must be retained.
-- Do not include quotation marks in either stored URI.
-- Keep the original federation callback created by `Initialize-Authentik`; add
-  the VCFA callback as the second entry.
+- The `?service=provider` and `?service=tenant:<organization-name>` query
+  strings are part of their respective URIs and must be retained.
+- Do not include quotation marks in any stored URI.
+- VCFA generates each organization's OAuth redirect URI. The value is
+  read-only in VCFA, so allow the generated URI in Authentik rather than trying
+  to change it in the organization settings.
+- Keep the original federation callback created by `Initialize-Authentik` and
+  every previously allowed VCFA callback.
 
-The second callback can be confirmed from VCFA's browser authorization request
-or from the read-only redirect URI shown by the VCFA OIDC configuration.
+Confirm the exact callback from VCFA's browser authorization request or from
+the read-only redirect URI shown by that organization's OIDC configuration.
+With strict matching, capitalization, punctuation, and the complete query
+string must match exactly.
+
+> The current `Set-AuthentikOidc.ps1` automation submits one discovered
+> redirect URI and replaces the provider's `redirect_uris` collection. Until
+> that behavior is changed to merge entries, do not rerun it against a shared
+> multi-organization provider after adding callbacks manually.
 
 ## 7. Confirm Authentik provider settings
 
@@ -383,10 +405,17 @@ expression.
 1. Sign out of VCFA or use a private browser window.
 2. Select the configured OIDC identity provider.
 3. Authenticate to Authentik as `vcfadmin`.
-4. Confirm Authentik returns the browser to:
+4. Confirm Authentik returns the browser to the callback for the context being
+   tested. Provider-context login uses:
 
    ```text
    https://auto-a.site-a.vcf.lab/login/oauth?service=provider
+   ```
+
+   Organization login uses its generated tenant callback, for example:
+
+   ```text
+   https://auto-a.site-a.vcf.lab/login/oauth?service=tenant:test-auth-org
    ```
 
 5. Confirm VCFA opens successfully and recognizes `vcfadmin` with the assigned
@@ -486,9 +515,9 @@ logout; it is not the browser's post-logout landing-page setting.
 
 | Observation | Check |
 |---|---|
-| Authentik rejects the authorization request | Both exact strict redirect URIs and client ID |
+| Authentik rejects the authorization request | Exact strict redirect URI for the current provider or organization context, and client ID |
 | Authentik succeeds but VCFA rejects the callback | Client secret, CA trust, issuer, and token exchange |
-| VCFA says the authenticated user is unauthorized | `preferred_username` mappings, exact group import, and assigned role |
+| VCFA says the authenticated user is unauthorized | `preferred_username` mappings, an imported group that exactly matches a `groups` claim value, and the assigned role |
 | Group is absent from VCFA | Authentik `groups` claim and exact group-name capitalization |
 | VCFA reports `"user.roles":"[]"` | `roles` mapping, `vcf` scope, ID-token claims, and organization context |
 | Deferred user authenticates but has no rights | Exact case-sensitive organization role and imported group assigned Defer to Identity Provider |
